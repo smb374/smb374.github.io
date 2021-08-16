@@ -9,8 +9,9 @@ navbar_entries:
     url: https://github.com/smb374
 
 project_entries:
-
-old_project_entries:
+  - title: todomvc-rust-fullstack-example
+    url: https://github.com/smb374/todomvc-rust-fullstack-example
+    desc: A example project demonstrating how to write a fullstack service by Rust using the TodoMVC template.
 
 footer_entries:
   - title: smb374's homepage
