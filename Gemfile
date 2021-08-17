@@ -17,7 +17,6 @@ gem "github-pages", "~> 218", group: :jekyll_plugins
 group :jekyll_plugins do
   gem "jekyll-feed", "~> 0.12"
   gem "jekyll-seo-tag", "~> 2.7.1"
-  gem "jekyll-soopr-seo-tag", "~> 2.7.3"
 end
 
 gem "minima"
