@@ -56,6 +56,8 @@ reference access at the sametime, we'll have to separate a polling thread for `R
 
 ## 3. Single-threaded runtime
 
+Code for single-threaded runtime: [`here`](https://github.com/smb374/thread-poll-server/blob/main/src/lib/single_thread.rs)
+
 The single-threaded runtime can be described briefly by the following graph:
 
 ![single thread model](https://imgur.com/F6R3Ykz.png)
