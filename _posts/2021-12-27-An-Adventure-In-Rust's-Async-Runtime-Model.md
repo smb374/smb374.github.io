@@ -272,3 +272,17 @@ This scheduler is a pretty simple one: it just round through all the worker thre
 but there's no guarantee that the workload of each worker thread is fair.
 
 The code is relatively easy to understand, so I won't explain further, just look at the [code](https://github.com/smb374/thread-poll-server/blob/main/src/lib/schedulers/round_robin.rs).
+
+### 4-4. The WorkStealingScheduler
+
+This scheduler is a much complex one, compared to `RoundRobinScheduler`.
+
+The whole work stealing process of my implementation:
+
+- Each worker thread will pop as much task from the `Worker` queue and execute them
+  ![pop worker queue](https://imgur.com/c5FDX2W.png)
+- When the worker queue is empty, it will try to receive as much woke up tasks as possible, then push them into the `Worker` queue.
+  ![get wake ups](https://imgur.com/yU48Dgz.png)
+- If no woke up task is pushed, it will try to steal task from `Injector` queue of the scheduler or other's `Worker` queue.
+- If no tasks are stole, then it will block waiting for wake up task, broadcasting message from scheduler to inform that `Injector` queue has new tasks, or close message to exit the loop.
+  ![steal](https://imgur.com/t0f7UTd.png)
