@@ -286,3 +286,38 @@ The whole work stealing process of my implementation:
 - If no woke up task is pushed, it will try to steal task from `Injector` queue of the scheduler or other's `Worker` queue.
 - If no tasks are stole, then it will block waiting for wake up task, broadcasting message from scheduler to inform that `Injector` queue has new tasks, or close message to exit the loop.
   ![steal](https://imgur.com/t0f7UTd.png)
+  - Note that batch stealing from `Injector` is done by `steal_batch_and_pop(&self.worker)`. It will try to steal multiple tasks and if success it will pop one out as the ruturn result.
+  - code for stealing:
+
+```rust
+// src/lib/schedulers/work_stealing.rs
+fn steal_task(&self) -> Option<Arc<Task>> {
+    // A infinite iterator
+    // will generate *ONE* task at a time
+    std::iter::repeat_with(|| {
+        self.injector
+            .steal()
+            .or_else(|| self.stealers.iter().map(|s| s.steal()).collect())
+    })
+    // find first non-Retry steal result
+    .find(|s| !s.is_retry())
+    // Steal<T> -> Option<T>
+    .and_then(|s| s.success())
+}
+```
+
+The whole code can be viewed at [here](https://github.com/smb374/thread-poll-server/blob/main/src/lib/schedulers/work_stealing.rs), the main logic is described as above.
+
+## Conclusion
+
+We have successfully went through the hard part of implementing an async runtime (`Executor` and `Runner`).
+The runtime compactible library part is simply grab corresponding lib from `std`, wrap it, run stuff as non-blocking mode,
+register event on registry and add waker if `io::ErrorKind::WouldBlock` then return `Poll::Pending`,
+return result with `Poll::Ready(T)`.
+
+I've made `AsyncTcpListener` & `AsyncTcpStream` with async functions that will serve an echo server.
+Try it and launch issues. If you like the repo, just give me a star.
+
+Also I need some help on the multi-threading runtime's stuff, if you can help me with that part ot would be greatful.
+
+See you at the next post!
