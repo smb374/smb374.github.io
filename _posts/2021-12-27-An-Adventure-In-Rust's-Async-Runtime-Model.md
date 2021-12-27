@@ -17,3 +17,6 @@ I am.
 The code of this project can be found at [`smb374/thread-poll-server`](https://github.com/smb374/thread-poll-server).
 
 ## 1. The Model
+
+The execution model is rather simple to explain (but we all know simple stuff can be hard to do well):
+![async model view](https://imgur.com/5IeQjms.png)
