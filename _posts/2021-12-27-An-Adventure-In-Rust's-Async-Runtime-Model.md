@@ -57,6 +57,7 @@ reference access at the sametime, we'll have to separate a polling thread for `R
 `Reactor`'s wait code:
 
 ```rust
+// src/lib/reactor.rs
 pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<()> {
     // poll for IO events, block until one event appears.
     self.poll.poll(&mut self.events, timeout)?;
@@ -129,3 +130,145 @@ where
     self.run()
 }
 ```
+
+For the rest of the part (e.g.: struct definition, imports, misc functions), please refer to `src/lib/single_thread.rs` & `src/lib/reactor.rs`.
+The code of these two files is 300- SLOCs, pretty short and simple to implement and understand.
+The problematic part is when you need to extend it to multi-threaded runtime.
+
+## 4. Multi-threaded runtime
+
+I think we all agree that things will get more complex than you thought when it comes to multi-threading.
+At least it's totally true when writing an async runtime.
+
+The first problem we'll encounter is task scheduling. How would you distribute tasks to all the worker threads has always been a problem.
+Plus, different strategy suits for different scenarioes, it's hard to decide what to use.
+
+The second problem is you have take atomic actions, locking problem, and starvation into consideration.
+While a simple round-robin or hash distribution seems fair enough, but that's fair only on schedule time.
+In reality, threads may starve for tasks, this will cause problem when we're designing a server software that may
+encounter C10K problem, where you definitely don't want a thread just chill and do nothing. Also, atomic actions and locking
+are pretty expensive, avoiding constantly doing them is also a hard problem.
+
+I've designed two schedulers: the simple Round Robin scheduler and the more complicated Work Stealing scheduler.
+I'm not very good at multi-threading, so if you guys think there's a better way, don't hasitate and tell me your thoughts,
+simply launch an issue is a huge help.
+
+### 4-1. The execution model
+
+The brief execution model can be described by this graph:
+
+![multi thread model](https://imgur.com/DQgJcZG.png)
+
+1. `Spawner` spawns multiple tasks and send to the `Scheduler`
+2. `Scheduler` will then schedule the tasks use chosen strategy to distribute the task to each worker threads
+3. Each worker thread will run all the tasks until there's no tasks to run, then each of them will wait wakeups or task schedule
+4. At the mean time, the poll thread will make `Reactor` to continously poll for readiness events and wake up tasks
+5. It's up to the woke up tasks to wake up at the worker threads or to reschedule itself
+
+### 4-2. The Scheduler trait and the Executor
+
+To make us easy to swith or implement scheduling strategies, we defined a public `Scheduler` trait:
+
+```rust
+// src/lib/schedulers/mod.rs
+pub trait Scheduler {
+    fn init(size: usize) -> (Spawner, Self);
+    fn schedule(&mut self, future: BoxedFuture);
+    fn reschedule(&mut self, task: Arc<Task>);
+    fn shutdown(self);
+    fn receiver(&self) -> &Receiver<ScheduleMessage>;
+}
+```
+
+This trait defined the needed behaviours that a `Scheduler` must satisfy to run with the `Executor`.
+Take a look at the `Executor`'s code:
+
+```rust
+// src/lib/multi_thread.rs
+impl<S: Scheduler> Executor<S> {
+    pub fn new() -> Self {
+        // get number of current cpu cores
+        let cpus = num_cpus::get();
+        let size = if cpus == 0 { 1 } else { cpus - 1 };
+        // setup scheduler & spawner
+        let (spawner, scheduler) = S::init(size);
+        let (tx, rx) = channel::unbounded();
+        // setup global SPAWNER
+        SPAWNER.lock().deref_mut().replace(spawner);
+        // create the poll thread
+        let poll_thread_handle = thread::spawn(move || Self::poll_thread(rx));
+        Self {
+            scheduler,
+            poll_thread_notifier: tx,
+            poll_thread_handle,
+        }
+    }
+    fn poll_thread(rx: Receiver<()>) {
+        // poll thread will continously block until any rediness event
+        // it will exit automatically when error occurs or shutdown notify.
+        let mut reactor = reactor::Reactor::new();
+        reactor.setup_registry();
+        loop {
+            match rx.try_recv() {
+                // exit signal
+                Ok(()) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            };
+            // blocking wait for readiness events
+            if let Err(e) = reactor.wait(None) {
+                eprintln!("reactor wait error: {}, exit poll thread", e);
+                break;
+            }
+        }
+    }
+    fn run(mut self) {
+        // The main loop will continously schedule tasks
+        // until shutdown or error.
+        loop {
+            // blocking receive schedule messages
+            match self.scheduler.receiver().recv() {
+                // continously schedule tasks
+                Ok(msg) => match msg {
+                    ScheduleMessage::Schedule(future) => self.scheduler.schedule(future),
+                    ScheduleMessage::Reschedule(task) => self.scheduler.reschedule(task),
+                    ScheduleMessage::Shutdown => break,
+                },
+                Err(_) => {
+                    eprintln!("exit...");
+                    break;
+                }
+            }
+        }
+        // shutdown worker threads
+        self.scheduler.shutdown();
+        // shutdown poll thread
+        self.poll_thread_notifier
+            .send(())
+            .expect("Failed to send notify");
+        let _ = self.poll_thread_handle.join();
+    }
+    // The `block_on` function
+    pub fn block_on<F>(self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        spawn(future);
+        self.run();
+    }
+}
+```
+
+The logic of the `Executor` is similliar to the single-threaded runtime, except it needs to spawn a polling thread and the
+tasks is scheduled to the worker threads.
+However, the scheduler's implementation is up to you to spawn worker threads and schedule the tasks.
+
+I've made two scheduler implementations, `RoundRobinScheduler` and `WorkStealingScheduler`.
+
+Note that when implementing both schedulers, I use `crossbeam`'s channel rather than the `std::mpsc` one, for multiplexing channels and broadcasting.
+
+### 4-3. The RoundRobinScheduler
+
+This scheduler is a pretty simple one: it just round through all the worker threads and spread it evenly when scheduling,
+but there's no guarantee that the workload of each worker thread is fair.
+
+The code is relatively easy to understand, so I won't explain further, just look at the [code](https://github.com/smb374/thread-poll-server/blob/main/src/lib/schedulers/round_robin.rs).
