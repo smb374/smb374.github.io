@@ -60,4 +60,4 @@ Code for single-threaded runtime: [`here`](https://github.com/smb374/thread-poll
 
 The single-threaded runtime can be described briefly by the following graph:
 
-![single thread model](https://imgur.com/F6R3Ykz.png)
+![single thread model](https://imgur.com/wSG4WTr.png)
