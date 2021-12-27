@@ -54,10 +54,65 @@ registration and deregistration to the reactor, and a global map will accept add
 Note that the `poll` method can only be accessed with mutable reference, which Rust guarentees that the will only be at most one mutable
 reference access at the sametime, we'll have to separate a polling thread for `Reactor` in multi-threaded runtime.
 
-## 3. Single-threaded runtime
+`Reactor`'s wait code:
 
-Code for single-threaded runtime: [here](https://github.com/smb374/thread-poll-server/blob/main/src/lib/single_thread.rs)
+```rust
+pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+    self.poll.poll(&mut self.events, timeout)?; // poll for IO events, block until one event appears.
+    let mut guard = WAKER_MAP.lock(); // lock global waker map.
+    let wakers_ref = guard.deref_mut();
+    for e in self.events.iter() { // iterate the events
+        if let Some(waker_set) = wakers_ref.get_mut(&e.token()) { // find token in waker map
+            if e.is_readable() && !waker_set.read.is_empty() { // wake up read waiting tasks
+                // drain all the wakers to clean the vec at the same time.
+                waker_set.read.drain(..).for_each(|w| w.wake_by_ref());
+            }
+            if e.is_writable() && !waker_set.write.is_empty() { // wake up write waiting tasks
+                waker_set.write.drain(..).for_each(|w| w.wake_by_ref());
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+## 3. Single-threaded runtime
 
 The single-threaded runtime can be described briefly by the following graph:
 
 ![single thread model](https://imgur.com/wSG4WTr.png)
+
+1. `Executor` will be started by `block_on` an async function, which spawn the task & start the main loop.
+2. Main loop will receive the `block_on` task and other task spawned.
+3. For every task received, it will run itself until the under lying future returns either `Poll::Pending` or `Poll::Ready(())`
+4. After all the tasks are either sleeped or exited, `Executor` will block and wait `Reactor` finish waiting events
+5. `Reactor` will wake up corresponding tasks according to the event it received
+6. Tasks that is woke up will send itself to `Executor`
+
+The actual main loop code:
+
+```rust
+// src/lib/single_thread.rs
+// setup reactor
+let mut reactor = reactor::Reactor::new();
+reactor.setup_registry();
+loop {
+    // try to receive any task it got in queue, non-blocking
+    // Will get `mpsc::TryRecvError::Empty` when no task is in queue,
+    // meaning that all the tasks are either finished or slept.
+    match self.rx.try_recv() {
+        Ok(msg) => match msg {
+            // run task
+            Message::Run(task) => task.run(),
+            // received disconnect message, cleanup and exit.
+            Message::Close => break,
+        },
+        Err(mpsc::TryRecvError::Empty) => {
+            // mio wait for io harvest
+            reactor.wait(None).unwrap();
+        }
+        // no sender is connected, bye.
+        Err(mpsc::TryRecvError::Disconnected) => break,
+    }
+}
+```
